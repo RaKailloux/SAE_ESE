@@ -1,0 +1,206 @@
+#include <Wire.h>
+#include <rgb_lcd.h>
+
+rgb_lcd lcd; // cree un objet de type "rgb_lcd" qui se nomme "lcd"
+
+// reglages du lcd 
+const unsigned char colorR = 255;
+const unsigned char colorG = 0;
+const unsigned char colorB = 0;
+
+// variables qui correspondent aux ports utilises pour chaque peripherique
+// entrees (capteurs)
+const unsigned char port_temperature = A0;  //capteur de température
+const unsigned char port_P1 = 4;  //switch pour simuler la présence de P1
+const unsigned char port_P2 = 2;  //Pin d'entrée de la carte pour p2
+const unsigned char port_P3 = 8;  //switch pour simuler la présence de P3
+// sorties (relais)
+const unsigned char port_tapis = 11;  //relais pour avancer le tapis
+const unsigned char port_chauffage = 12;  //relais activation de chauffage
+const unsigned char port_ventilation = 13;  //relais activation du ventilateur
+
+
+// temperature a atteindre lors de la chauffe, au dessu de 23, la chauffe s'arrete
+const unsigned char temperature_haute = 25;
+// temperature a atteindre lors de la ventilation, en dessous de 22, la ventilation s'arrete
+const unsigned char temperature_basse = 23;
+
+// variables qui contiennent l'etat de chaque entree à l'état initiale --> aucune piéce détecté à l'initiale. 
+//Utilisation des bool pour avoir que des 1 ou 0
+_Bool etat_P1 = 0; 
+_Bool etat_P2 = 0;
+_Bool etat_P3 = 0;
+float temperature = 0;
+
+// variables qui servent à memoriser les etapes a effectuer
+_Bool chauffe_en_cours = 0;
+_Bool ventilation_en_cours = 0;
+_Bool chauffe_effectuee = 0;
+unsigned char nbr_de_pieces = 0;
+
+// pour memoriser l'etat des ports et detecter des fronts montants ou descendants --> sert à gérer lorsqu'il y a plusieur piece sur le tapis
+_Bool P1_precedent = 0;
+_Bool P2_precedent = 0;
+_Bool P3_precedent = 0;
+
+// initialisations
+void setup() 
+{   
+    // initialisation du port serie a 115200 bauds/s
+    // (sert pour debug)
+    Serial.begin(115200);
+    // initialisation du lcd
+    lcd.begin(16, 2); // on definit la forme du lcd, ici on a 16 characteres et 2 lignes
+    lcd.setRGB(colorR, colorG, colorB);
+    // initialisation des relais en sortie
+    pinMode(port_tapis, OUTPUT);
+    pinMode(port_chauffage, OUTPUT);
+    pinMode(port_ventilation, OUTPUT);
+}
+
+// main
+void loop() {
+  update_variables(); // stock l'etat des ports dans des variables
+  
+  gerer_relais(); // adapte l'etat des relais en fonction des ports
+  
+  gerer_affichage(); // gere l'affichage sur le lcd
+
+  delay(300);
+}
+
+float update_variables(){
+  // lit la donnee du port analogique connecte au capteur de temperature et on convertit la valeur en °C. Formule de 500/1023 pour avoir en degré.
+  //Sensibilité 10mV/degré 
+  //On récupére une donnée numérique --> bits . On sait que 5V = 1023 bits  : produit en croix  
+  temperature = analogRead(port_temperature)*500.0/1023;
+
+  //on récupere l'état du port et on l'affecte a une variable.
+  etat_P1 = digitalRead(port_P1);
+  etat_P2 = digitalRead(port_P2);
+  etat_P3 = digitalRead(port_P3);
+}
+
+//gérer l'affichage de température
+void afficher_temperature(){
+  lcd.print(temperature); // affiche la temperature
+  lcd.print(char(223)); // affiche le caractere "°"
+  lcd.print("C"); // affiche le C de Celsius
+}
+
+// fonction pour afficher la présence ou non
+void afficher_presence(){
+  if (etat_P2){ // si P2 = 1
+    lcd.print("Presence");}
+  else{
+    lcd.print(" ");}
+}
+
+void afficher_relais(){
+  // affiche l'etat des 3 relais, sert surtout a debug. Il affiche l'état des capteurs
+  lcd.print(nbr_de_pieces); // affiche le nombre de pieces enregistre
+  lcd.print(" ");
+  lcd.print(etat_P1); //état du capteur 1  1er 0
+  lcd.print(etat_P2); //état du capteur 2  2e 0
+  lcd.print(etat_P3); //état du capteur 3  3e 0
+}
+
+//gére l'affichae sur le LCD
+void gerer_affichage(){
+  lcd.clear(); // on efface ce qui est etait affiche sur le lcd pour le mettre a jour
+
+  lcd.setCursor(0,0); // on se met ligne 0 position 0 du lcd pour afficher la température
+  afficher_temperature();
+
+  lcd.setCursor(11,0); // on se met ligne 0 position 13 du lcd pour afficher l'état des relais
+  afficher_relais();
+
+  lcd.setCursor(0,1); // on se met ligne 1 position 0 du lcd pour afficher l'état : chauffe, ventilation ou avance
+
+  //Si la chauffe est en cours ou la ventilation, on indique si la piéce est présente ou nous
+  if (chauffe_en_cours or ventilation_en_cours){
+    afficher_presence();
+  }
+  //Si le relais 1 est actif, on indique que le tapis avance
+  if (digitalRead(port_tapis) == 1){
+    lcd.print("Avance tapis ");
+  }
+
+  //Si la chauffe est en cours, on indique que ca chauffe
+  if (chauffe_en_cours){
+    lcd.print("/Chauffe...");
+  }
+  // si la ventilation est en cours, on indique que ca refroidit
+  if (ventilation_en_cours){
+    lcd.print("/Ventilation...");
+  }
+}
+
+//fonction qui va gérer l'ouverture et la fermeture des relais
+void gerer_relais(){
+
+  // si une piéce arrive en P1, et que P1 est à 0 --> front montant (arrivée d'une piece)
+  if (etat_P1 == 1 and P1_precedent == 0){
+    P1_precedent = 1;
+    ++nbr_de_pieces ; // +1 piece sur le tapis 
+  }
+  //Si P1 = 0 et que P1_prec = 1 --> front descendant donc 1 piece 
+  if (etat_P1 == 0 and P1_precedent == 1){
+    P1_precedent = 0;
+  }
+  //Si une piece arrive en P2 et qu'il y avait pas de piece en P2 alors : front montant donc on une piéce arrive à P2
+  if (etat_P2 == 1 and P2_precedent == 0){
+    P2_precedent = 1;
+  }
+  //Piece repart de P2 (fini son chauffe + ventilation) --> on se prepare au cycle de chauffe pour la nouvelle piece (si plusieurs piece sur le tapis)
+  if (etat_P2 == 0 and P2_precedent == 1){
+    P2_precedent = 0;
+    chauffe_effectuee = 0; // chauffe effectuee reset sur front descendant de P2
+  }
+
+  if (etat_P3 == 1 and P3_precedent == 0){
+    P3_precedent = 1;
+    if (nbr_de_pieces > 0){
+      --nbr_de_pieces ; // -1 piece sur le tapis sur front montant de P3
+    }
+  }
+  //piece part de 
+  if (etat_P3 == 0 and P3_precedent == 1){
+    P3_precedent = 0; //plus de piece en P3
+  }
+
+  // gere le tapis
+  //Si le il y a une piece sur le tapis, que la chauffe n'est pas en cours, la ventilation n'est pas en cours et que P3 n'est pas active, alors on avance le tapis
+  if (nbr_de_pieces > 0 and not (chauffe_en_cours or ventilation_en_cours or etat_P3)){
+    digitalWrite(port_tapis, HIGH);
+  }else{
+    digitalWrite(port_tapis, LOW);
+  }
+
+  // detecte l'arrivee d'une piece en P2
+  //Si une piece arrive en P2, piece sur le tapis, la chauffe et ventilation pas active --> on commence la chauffe
+  if (etat_P2 and nbr_de_pieces > 0 and not (chauffe_effectuee or chauffe_en_cours or ventilation_en_cours)){
+    chauffe_en_cours = 1;
+    digitalWrite(port_chauffage, HIGH);
+  }
+
+  // gere la chauffe. Si la chauffe est en cours et qu'une piéce est toujours présente en P2, on compare la temperature. Si la temperature est supérieur
+  //à la temperature haute, on arrete de chauffer, on active la ventilation en activant son relais.
+  if (chauffe_en_cours and etat_P2 == 1){
+    if (temperature > temperature_haute){
+      chauffe_en_cours = 0;
+      digitalWrite(port_chauffage, LOW);
+      ventilation_en_cours = 1;
+      digitalWrite(port_ventilation, HIGH);
+    }
+  }
+  
+  // gere la ventilation. Lorsque la temperature est inférieur à temperature basse, on arrete la ventilation en coupant son relais.
+  if (ventilation_en_cours){
+    if (temperature < temperature_basse){
+      ventilation_en_cours = 0;
+      digitalWrite(port_ventilation, LOW);
+      chauffe_effectuee = 1;
+    }
+  }
+}
